@@ -7,11 +7,35 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
+from db import OPENROUTER_URL
 from models import Model
+
+OPENROUTER_NAME_MAP = {
+    "gpt-4o-mini": "openai/gpt-4o-mini",
+    "deepseek-chat": "deepseek/deepseek-chat",
+    "llama-3.3-70b-versatile": "meta-llama/llama-3.3-70b-instruct",
+}
 
 
 class NetworkError(Exception):
     pass
+
+
+def _resolve_endpoint(model: Model) -> tuple[str, str, str]:
+    """Возвращает (ключ, url, имя модели для API)."""
+    api_key = os.getenv(model.api_id, "").strip()
+    if api_key:
+        return api_key, model.api_url, model.name
+
+    fallback = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if fallback:
+        mapped = OPENROUTER_NAME_MAP.get(model.name, model.name)
+        return fallback, OPENROUTER_URL, mapped
+
+    raise NetworkError(
+        f"Не задана переменная окружения {model.api_id}. "
+        "Добавьте ключ в .env / .env.local или укажите OPENROUTER_API_KEY."
+    )
 
 
 def _extract_text(payload: dict) -> str:
@@ -27,25 +51,24 @@ def send_prompt(
     timeout: float = 60.0,
     temperature: float = 0.7,
 ) -> str:
-    api_key = os.getenv(model.api_id, "").strip()
-    if not api_key:
-        raise NetworkError(
-            f"Не задана переменная окружения {model.api_id}. Добавьте ключ в файл .env."
-        )
+    api_key, api_url, model_id = _resolve_endpoint(model)
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    if "openrouter.ai" in api_url.lower():
+        headers["HTTP-Referer"] = "https://github.com/chatlist"
+        headers["X-Title"] = "ChatList"
     body = {
-        "model": model.name,
+        "model": model_id,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": temperature,
     }
 
     try:
         response = requests.post(
-            model.api_url,
+            api_url,
             json=body,
             headers=headers,
             timeout=timeout,

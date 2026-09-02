@@ -7,13 +7,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont
+from dotenv import dotenv_values
+from PyQt6.QtCore import Qt, QThread
+from PyQt6.QtGui import QColor, QFont, QPalette
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -30,63 +31,97 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
-from db import Database, app_root
+from db import Database, app_root, load_app_env
 from models import Model, ModelService
 from network import send_to_models
 
 ROOT = app_root()
-load_dotenv(ROOT / ".env")
+load_app_env()
 
 STYLE = """
-QMainWindow, QDialog { background: #f4f5f7; }
-QTabWidget::pane { border: 1px solid #d8dee6; background: #ffffff; top: -1px; }
+QMainWindow, QDialog { background: #e6edf5; }
+QTabWidget::pane { border: 1px solid #9bb0c7; background: #eef3f8; top: -1px; }
 QTabBar::tab {
     padding: 8px 16px;
-    background: #e8edf3;
-    border: 1px solid #d8dee6;
+    background: #c5d4e6;
+    color: #1e293b;
+    border: 1px solid #9bb0c7;
     border-bottom: none;
     margin-right: 4px;
 }
-QTabBar::tab:selected { background: #ffffff; font-weight: 600; }
+QTabBar::tab:selected { background: #eef3f8; font-weight: 600; }
 QPushButton {
-    background: #2563eb;
+    background: #1d4ed8;
     color: #ffffff;
     border: none;
     border-radius: 6px;
     padding: 7px 14px;
-}
-QPushButton:hover { background: #1d4ed8; }
-QPushButton:disabled { background: #94a3b8; }
-QPushButton#secondary {
-    background: #e2e8f0;
-    color: #0f172a;
-}
-QPushButton#secondary:hover { background: #cbd5e1; }
-QLineEdit, QPlainTextEdit {
-    border: 1px solid #cbd5e1;
-    border-radius: 6px;
-    padding: 6px;
-    background: #ffffff;
-}
-QTableWidget {
-    border: 1px solid #d8dee6;
-    gridline-color: #eef2f6;
-    selection-background-color: #dbeafe;
-    selection-color: #0f172a;
-}
-QHeaderView::section {
-    background: #f1f5f9;
-    padding: 6px;
-    border: none;
-    border-right: 1px solid #e2e8f0;
-    border-bottom: 1px solid #d8dee6;
     font-weight: 600;
 }
-QStatusBar { background: #eef2f6; }
+QPushButton:hover { background: #1e40af; }
+QPushButton:disabled { background: #94a3b8; color: #e2e8f0; }
+QPushButton#secondary {
+    background: #0f766e;
+    color: #ffffff;
+}
+QPushButton#secondary:hover { background: #0d5e58; }
+QLineEdit, QPlainTextEdit, QComboBox {
+    border: 1px solid #7c93ad;
+    border-radius: 6px;
+    padding: 6px;
+    background: #fff4d6;
+    color: #111827;
+    selection-background-color: #f59e0b;
+    selection-color: #111827;
+}
+QLineEdit::placeholder, QPlainTextEdit[placeholderText] {
+    color: #6b7280;
+}
+QComboBox {
+    background: #ffe8b3;
+    color: #111827;
+}
+QComboBox QAbstractItemView {
+    background: #fff4d6;
+    color: #111827;
+    selection-background-color: #f59e0b;
+}
+QPlainTextEdit#preview, QTextBrowser#preview {
+    background: #dcefe4;
+    color: #14532d;
+    border: 1px solid #6aa084;
+}
+QTextBrowser#markdownView {
+    background: #fffef6;
+    color: #111827;
+    border: 1px solid #c4b896;
+    padding: 16px;
+    font-size: 14px;
+}
+QTableWidget {
+    border: 1px solid #7c93ad;
+    background: #fff4d6;
+    alternate-background-color: #ffe9b8;
+    gridline-color: #d6c089;
+    color: #111827;
+    selection-background-color: #fbbf24;
+    selection-color: #111827;
+}
+QHeaderView::section {
+    background: #c5d4e6;
+    color: #1e293b;
+    padding: 6px;
+    border: none;
+    border-right: 1px solid #9bb0c7;
+    border-bottom: 1px solid #9bb0c7;
+    font-weight: 600;
+}
+QStatusBar { background: #c5d4e6; color: #1e293b; }
 """
 
 
@@ -96,12 +131,10 @@ class TempRow:
     response_text: str
     ok: bool
     selected: bool = False
+    pending: bool = False
 
 
 class QueryWorker(QThread):
-    finished_ok = pyqtSignal(list)
-    failed = pyqtSignal(str)
-
     def __init__(
         self,
         models: list[Model],
@@ -114,18 +147,53 @@ class QueryWorker(QThread):
         self.prompt = prompt
         self.timeout = timeout
         self.temperature = temperature
+        self.rows: list[tuple[str, str, bool]] = []
+        self.error: str | None = None
 
     def run(self) -> None:
         try:
-            rows = send_to_models(
+            self.rows = send_to_models(
                 self.models,
                 self.prompt,
                 timeout=self.timeout,
                 temperature=self.temperature,
             )
-            self.finished_ok.emit(rows)
         except Exception as exc:  # noqa: BLE001
-            self.failed.emit(str(exc))
+            self.error = str(exc)
+            self.rows = []
+
+
+MARKDOWN_CSS = """
+h1 { font-size: 22pt; font-weight: 700; color: #0f172a; margin: 8px 0 12px; }
+h2 { font-size: 16pt; font-weight: 700; color: #1e3a5f; margin: 14px 0 8px; }
+h3 { font-size: 13pt; font-weight: 600; color: #1e3a5f; margin: 12px 0 6px; }
+p, li { font-size: 12pt; line-height: 1.45; color: #111827; }
+code { background-color: #efe6c9; font-family: Consolas, 'Courier New', monospace; }
+pre { background-color: #efe6c9; margin: 8px 0; padding: 8px; }
+blockquote { color: #334155; margin-left: 12px; }
+a { color: #1d4ed8; }
+"""
+
+
+class MarkdownViewDialog(QDialog):
+    def __init__(self, parent: QWidget | None, title: str, markdown_text: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(900, 720)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+
+        view = QTextBrowser()
+        view.setObjectName("markdownView")
+        view.setOpenExternalLinks(True)
+        view.document().setDefaultStyleSheet(MARKDOWN_CSS)
+        view.setMarkdown(markdown_text.strip() or "_Нет текста._")
+
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(self.close)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(view)
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
 
 class ModelDialog(QDialog):
@@ -198,6 +266,7 @@ class MainWindow(QMainWindow):
         self.current_prompt_id: int | None = None
         self.current_prompt_text = ""
         self.temp_rows: list[TempRow] = []
+        self._md_dialogs: list[MarkdownViewDialog] = []
 
         tabs = QTabWidget()
         tabs.addTab(self._build_query_tab(), "Запрос")
@@ -211,10 +280,23 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Готово")
 
         self.refresh_all()
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.prompt_edit.setFocus()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.db.close()
         super().closeEvent(event)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not getattr(self, "_splitter_ready", False):
+            self._splitter_ready = True
+            self.query_splitter.setSizes([340, 360])
+            self.prompt_edit.setFocus()
+
+    def _on_tab_changed(self, index: int) -> None:
+        if index == 0:
+            self.prompt_edit.setFocus()
 
     # --- tabs ---
 
@@ -224,13 +306,16 @@ class MainWindow(QMainWindow):
 
         self.prompt_edit = QPlainTextEdit()
         self.prompt_edit.setPlaceholderText("Введите промт…")
-        self.prompt_edit.setMinimumHeight(120)
+        self.prompt_edit.setMinimumHeight(140)
+        self.prompt_edit.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         font = QFont(self.prompt_edit.font())
         font.setPointSize(11)
         self.prompt_edit.setFont(font)
 
         self.tags_edit = QLineEdit()
         self.tags_edit.setPlaceholderText("теги через запятую")
+        self.prompt_combo = QComboBox()
+        self.prompt_combo.currentIndexChanged.connect(self._on_prompt_combo)
 
         self.send_btn = QPushButton("Отправить")
         self.send_btn.clicked.connect(self.send_prompt)
@@ -242,15 +327,19 @@ class MainWindow(QMainWindow):
         self.export_json_btn = QPushButton("Экспорт JSON")
         self.export_json_btn.setObjectName("secondary")
         self.export_json_btn.clicked.connect(lambda: self.export_temp("json"))
+        self.open_md_btn = QPushButton("Открыть")
+        self.open_md_btn.clicked.connect(self.open_temp_markdown)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.send_btn)
         buttons.addWidget(self.save_temp_btn)
         buttons.addWidget(self.export_md_btn)
         buttons.addWidget(self.export_json_btn)
+        buttons.addWidget(self.open_md_btn)
         buttons.addStretch()
 
         form = QFormLayout()
+        form.addRow("Сохранённый промт", self.prompt_combo)
         form.addRow("Теги", self.tags_edit)
 
         self.temp_table = self._make_table(["Выбрать", "Модель", "Ответ", "Статус"])
@@ -259,30 +348,46 @@ class MainWindow(QMainWindow):
         self.temp_table.setColumnWidth(3, 90)
         self.temp_table.itemChanged.connect(self._on_temp_item_changed)
 
-        self.preview = QPlainTextEdit()
-        self.preview.setReadOnly(True)
-        self.preview.setPlaceholderText("Полный ответ выбранной строки")
+        self.preview = QTextBrowser()
+        self.preview.setObjectName("preview")
+        self.preview.setOpenExternalLinks(True)
+        self.preview.setPlaceholderText("Ответ модели. Нажмите «Открыть», чтобы увидеть Markdown.")
+        self.preview.setMinimumHeight(180)
         self.temp_table.itemSelectionChanged.connect(self._show_temp_preview)
+        self.temp_table.doubleClicked.connect(self.open_temp_markdown)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         top = QWidget()
+        top.setMinimumHeight(260)
         top_layout = QVBoxLayout(top)
         top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.addWidget(QLabel("Промт"))
-        top_layout.addWidget(self.prompt_edit)
+        top_layout.addWidget(QLabel("Промт — пишите запрос здесь"))
+        top_layout.addWidget(self.prompt_edit, 1)
         top_layout.addLayout(form)
         top_layout.addLayout(buttons)
 
         bottom = QWidget()
         bottom_layout = QVBoxLayout(bottom)
         bottom_layout.setContentsMargins(0, 0, 0, 0)
+        answer_header = QHBoxLayout()
+        answer_header.addWidget(QLabel("Ответ"))
+        answer_header.addStretch()
+        open_answer_btn = QPushButton("Открыть")
+        open_answer_btn.clicked.connect(self.open_temp_markdown)
+        answer_header.addWidget(open_answer_btn)
+
         bottom_layout.addWidget(QLabel("Временные результаты"))
-        bottom_layout.addWidget(self.temp_table, 2)
-        bottom_layout.addWidget(self.preview, 1)
+        bottom_layout.addWidget(self.temp_table, 1)
+        bottom_layout.addLayout(answer_header)
+        bottom_layout.addWidget(self.preview, 2)
 
         splitter.addWidget(top)
         splitter.addWidget(bottom)
+        splitter.setChildrenCollapsible(False)
+        splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
+        splitter.setSizes([320, 380])
+        self.query_splitter = splitter
         root.addWidget(splitter)
         return tab
 
@@ -330,6 +435,9 @@ class MainWindow(QMainWindow):
         edit_btn = QPushButton("Изменить")
         edit_btn.setObjectName("secondary")
         edit_btn.clicked.connect(self.edit_model)
+        toggle_btn = QPushButton("Вкл/Выкл")
+        toggle_btn.setObjectName("secondary")
+        toggle_btn.clicked.connect(self.toggle_model)
         del_btn = QPushButton("Удалить")
         del_btn.setObjectName("secondary")
         del_btn.clicked.connect(self.delete_model)
@@ -337,6 +445,7 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         row.addWidget(add_btn)
         row.addWidget(edit_btn)
+        row.addWidget(toggle_btn)
         row.addWidget(del_btn)
         row.addStretch()
 
@@ -358,13 +467,18 @@ class MainWindow(QMainWindow):
         )
         self.results_preview = QPlainTextEdit()
         self.results_preview.setReadOnly(True)
+        self.results_preview.setMinimumHeight(180)
         self.results_table.itemSelectionChanged.connect(self._show_result_preview)
+        self.results_table.doubleClicked.connect(self.open_saved_markdown)
 
         export_md = QPushButton("Экспорт Markdown")
         export_md.clicked.connect(lambda: self.export_saved("md"))
         export_json = QPushButton("Экспорт JSON")
         export_json.setObjectName("secondary")
         export_json.clicked.connect(lambda: self.export_saved("json"))
+        open_btn = QPushButton("Открыть")
+        open_btn.setObjectName("secondary")
+        open_btn.clicked.connect(self.open_saved_markdown)
         del_btn = QPushButton("Удалить")
         del_btn.setObjectName("secondary")
         del_btn.clicked.connect(self.delete_result)
@@ -372,6 +486,7 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         row.addWidget(export_md)
         row.addWidget(export_json)
+        row.addWidget(open_btn)
         row.addWidget(del_btn)
         row.addStretch()
 
@@ -397,11 +512,7 @@ class MainWindow(QMainWindow):
         save_btn = QPushButton("Сохранить настройки")
         save_btn.clicked.connect(self.save_settings)
 
-        hint = QLabel(
-            f"API-ключи хранятся в файле:\n{ROOT / '.env'}\n"
-            "Пример: OPENAI_API_KEY=sk-...\n"
-            "В таблице моделей указывается только имя переменной (api-id)."
-        )
+        hint = QLabel(self._env_hint_text())
         hint.setWordWrap(True)
 
         layout.addLayout(form)
@@ -420,15 +531,19 @@ class MainWindow(QMainWindow):
             lambda text: self._filter_table(self.logs_table, text)
         )
         self.logs_table = self._make_table(["ID", "Дата", "Модель", "Статус", "Сообщение"])
+        clear_btn = QPushButton("Очистить журнал")
+        clear_btn.setObjectName("secondary")
+        clear_btn.clicked.connect(self.clear_logs)
         layout.addWidget(self.logs_search)
         layout.addWidget(self.logs_table)
+        layout.addWidget(clear_btn, alignment=Qt.AlignmentFlag.AlignLeft)
         return tab
 
     def _make_table(self, headers: list[str]) -> QTableWidget:
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSortingEnabled(True)
         table.verticalHeader().setVisible(False)
@@ -456,6 +571,7 @@ class MainWindow(QMainWindow):
             ],
         )
         self._filter_table(self.prompts_table, self.prompts_search.text())
+        self._refresh_prompt_combo()
 
     def refresh_models(self) -> None:
         rows = self.model_service.all()
@@ -519,6 +635,40 @@ class MainWindow(QMainWindow):
                 table.setItem(row, col, item)
         table.setSortingEnabled(True)
 
+    def _refresh_prompt_combo(self) -> None:
+        self.prompt_combo.blockSignals(True)
+        self.prompt_combo.clear()
+        self.prompt_combo.addItem("— новый промт —", None)
+        for row in self.db.list_prompts():
+            preview = " ".join(str(row["prompt"]).split())[:70]
+            self.prompt_combo.addItem(f"#{row['id']}  {preview}", int(row["id"]))
+        self.prompt_combo.blockSignals(False)
+
+    def _on_prompt_combo(self, index: int) -> None:
+        prompt_id = self.prompt_combo.itemData(index)
+        if not prompt_id:
+            return
+        row = self.db.get_prompt(int(prompt_id))
+        if row is None:
+            return
+        self.prompt_edit.setPlainText(row["prompt"])
+        self.tags_edit.setText(row["tags"])
+
+    def _env_hint_text(self) -> str:
+        merged: dict[str, str | None] = {}
+        merged.update(dotenv_values(ROOT / ".env"))
+        merged.update(dotenv_values(ROOT / ".env.local"))
+        status_lines = []
+        for key in sorted(k for k in merged if k):
+            filled = "задан" if (merged[key] or "").strip() else "пустой"
+            status_lines.append(f"{key}: {filled}")
+        status = "\n".join(status_lines) if status_lines else "файлы пустые"
+        return (
+            f"API-ключи хранятся в:\n{ROOT / '.env'}\n{ROOT / '.env.local'}\n\n"
+            f"{status}\n\n"
+            "В таблице моделей указывается только имя переменной (api-id), не сам ключ."
+        )
+
     def _filter_table(self, table: QTableWidget, text: str) -> None:
         needle = text.strip().lower()
         for row in range(table.rowCount()):
@@ -533,20 +683,23 @@ class MainWindow(QMainWindow):
             table.setRowHidden(row, needle not in " ".join(parts).lower())
 
     def _selected_id(self, table: QTableWidget) -> int | None:
-        items = table.selectedItems()
-        if not items:
-            row = table.currentRow()
-            if row < 0:
-                return None
+        ids = self._selected_ids(table)
+        return ids[0] if ids else None
+
+    def _selected_ids(self, table: QTableWidget) -> list[int]:
+        rows = {item.row() for item in table.selectedItems()}
+        if not rows and table.currentRow() >= 0:
+            rows = {table.currentRow()}
+        ids: list[int] = []
+        for row in sorted(rows):
             item = table.item(row, 0)
-        else:
-            item = table.item(items[0].row(), 0)
-        if item is None:
-            return None
-        try:
-            return int(item.text())
-        except ValueError:
-            return None
+            if item is None:
+                continue
+            try:
+                ids.append(int(item.text()))
+            except ValueError:
+                continue
+        return ids
 
     # --- query flow ---
 
@@ -571,7 +724,10 @@ class MainWindow(QMainWindow):
 
         self.current_prompt_id = self.db.add_prompt(prompt, self.tags_edit.text())
         self.current_prompt_text = prompt
-        self.temp_rows = []
+        self.temp_rows = [
+            TempRow(model_name=item.name, response_text="", ok=False, pending=True)
+            for item in models
+        ]
         self._render_temp_table()
         self.refresh_prompts()
 
@@ -579,17 +735,24 @@ class MainWindow(QMainWindow):
         temperature = float(self.db.get_setting("temperature", "0.7") or 0.7)
 
         self.worker = QueryWorker(models, prompt, timeout, temperature)
-        self.worker.finished_ok.connect(self._on_query_done)
-        self.worker.failed.connect(self._on_query_failed)
+        self.worker.finished.connect(self._on_worker_finished)
         self.send_btn.setEnabled(False)
         self.statusBar().showMessage(f"Отправка в {len(models)} моделей…")
         self.worker.start()
 
-    def _on_query_done(self, rows: list) -> None:
+    def _on_worker_finished(self) -> None:
         self.send_btn.setEnabled(True)
+        worker = self.worker
+        if worker is None:
+            return
+        if worker.error:
+            self.statusBar().showMessage("Ошибка запроса")
+            QMessageBox.critical(self, "ChatList", worker.error)
+            return
+
         self.temp_rows = [
-            TempRow(model_name=name, response_text=text, ok=ok)
-            for name, text, ok in rows
+            TempRow(model_name=name, response_text=text or "", ok=ok)
+            for name, text, ok in worker.rows
         ]
         for row in self.temp_rows:
             self.db.add_log(
@@ -599,12 +762,21 @@ class MainWindow(QMainWindow):
             )
         self._render_temp_table()
         self.refresh_logs()
-        self.statusBar().showMessage(f"Получено ответов: {len(self.temp_rows)}")
-
-    def _on_query_failed(self, message: str) -> None:
-        self.send_btn.setEnabled(True)
-        self.statusBar().showMessage("Ошибка запроса")
-        QMessageBox.critical(self, "ChatList", message)
+        ok_count = sum(1 for row in self.temp_rows if row.ok)
+        self.statusBar().showMessage(
+            f"Получено ответов: {ok_count} из {len(self.temp_rows)}"
+        )
+        if not self.temp_rows:
+            QMessageBox.warning(self, "ChatList", "Модели не вернули результат.")
+        elif ok_count == 0:
+            details = "\n\n".join(
+                f"{row.model_name}: {row.response_text[:400]}" for row in self.temp_rows
+            )
+            QMessageBox.warning(
+                self,
+                "ChatList",
+                "Все запросы завершились с ошибкой.\n\n" + details,
+            )
 
     def _render_temp_table(self) -> None:
         self.temp_table.blockSignals(True)
@@ -625,15 +797,19 @@ class MainWindow(QMainWindow):
             )
             self.temp_table.setItem(row, 0, check)
             self.temp_table.setItem(row, 1, QTableWidgetItem(row_data.model_name))
-            preview = row_data.response_text.replace("\n", " ")
+            preview = (row_data.response_text or "").replace("\n", " ")
             if len(preview) > 180:
                 preview = preview[:180] + "…"
             answer = QTableWidgetItem(preview)
-            answer.setData(Qt.ItemDataRole.UserRole, row_data.response_text)
+            answer.setData(Qt.ItemDataRole.UserRole, row_data.response_text or "")
             self.temp_table.setItem(row, 2, answer)
-            self.temp_table.setItem(
-                row, 3, QTableWidgetItem("ок" if row_data.ok else "ошибка")
-            )
+            if row_data.pending:
+                status = "ожидание…"
+            elif row_data.ok:
+                status = "ок"
+            else:
+                status = "ошибка"
+            self.temp_table.setItem(row, 3, QTableWidgetItem(status))
         self.temp_table.setSortingEnabled(True)
         self.temp_table.blockSignals(False)
         self.preview.clear()
@@ -662,7 +838,61 @@ class MainWindow(QMainWindow):
             self.preview.clear()
             return
         text = item.data(Qt.ItemDataRole.UserRole)
-        self.preview.setPlainText(text if text else item.text())
+        markdown = text if text else item.text()
+        self.preview.document().setDefaultStyleSheet(MARKDOWN_CSS)
+        self.preview.setMarkdown(markdown or "")
+
+    def _current_temp_answer(self) -> tuple[str, str] | None:
+        row = self.temp_table.currentRow()
+        if row < 0:
+            return None
+        name_item = self.temp_table.item(row, 1)
+        answer_item = self.temp_table.item(row, 2)
+        if name_item is None or answer_item is None:
+            return None
+        text = answer_item.data(Qt.ItemDataRole.UserRole) or answer_item.text()
+        if not str(text).strip():
+            return None
+        return name_item.text(), str(text)
+
+    def open_temp_markdown(self, *_args) -> None:
+        current = self._current_temp_answer()
+        if current is None:
+            QMessageBox.information(
+                self, "ChatList", "Выберите строку с ответом, затем нажмите «Открыть»."
+            )
+            return
+        model_name, text = current
+        dialog = MarkdownViewDialog(
+            self,
+            f"Ответ — {model_name}",
+            f"# {model_name}\n\n{text}",
+        )
+        self._md_dialogs.append(dialog)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def open_saved_markdown(self) -> None:
+        row = self.results_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "ChatList", "Выберите сохранённый результат.")
+            return
+        model_item = self.results_table.item(row, 2)
+        prompt_item = self.results_table.item(row, 3)
+        answer_item = self.results_table.item(row, 4)
+        model_name = model_item.text() if model_item else "Модель"
+        prompt = prompt_item.text() if prompt_item else ""
+        answer = answer_item.text() if answer_item else ""
+        if not answer.strip():
+            QMessageBox.information(self, "ChatList", "В этой строке нет текста ответа.")
+            return
+        markdown = f"# {model_name}\n\n**Промт:** {prompt}\n\n{answer}"
+        dialog = MarkdownViewDialog(self, f"Ответ — {model_name}", markdown)
+        self._md_dialogs.append(dialog)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def save_selected(self) -> None:
         selected = [row for row in self.temp_rows if row.selected]
@@ -700,10 +930,10 @@ class MainWindow(QMainWindow):
         self._export(payload, fmt)
 
     def export_saved(self, fmt: str) -> None:
-        result_id = self._selected_id(self.results_table)
+        selected_ids = set(self._selected_ids(self.results_table))
         rows = self.db.list_results()
-        if result_id is not None:
-            rows = [row for row in rows if int(row["id"]) == result_id]
+        if selected_ids:
+            rows = [row for row in rows if int(row["id"]) in selected_ids]
         payload = [
             {
                 "id": int(row["id"]),
@@ -791,6 +1021,17 @@ class MainWindow(QMainWindow):
         self.model_service.update(model_id, name, url, api_id, active)
         self.refresh_models()
 
+    def toggle_model(self) -> None:
+        model_id = self._selected_id(self.models_table)
+        if model_id is None:
+            QMessageBox.information(self, "ChatList", "Выберите модель.")
+            return
+        current = next((m for m in self.model_service.all() if m.id == model_id), None)
+        if current is None:
+            return
+        self.model_service.set_active(model_id, not current.is_active)
+        self.refresh_models()
+
     def delete_model(self) -> None:
         model_id = self._selected_id(self.models_table)
         if model_id is None:
@@ -813,13 +1054,19 @@ class MainWindow(QMainWindow):
         self.results_preview.setPlainText(f"Промт:\n{prompt}\n\nОтвет:\n{answer}")
 
     def delete_result(self) -> None:
-        result_id = self._selected_id(self.results_table)
-        if result_id is None:
+        ids = self._selected_ids(self.results_table)
+        if not ids:
             return
-        if self._confirm("Удалить выбранный результат?"):
-            self.db.delete_result(result_id)
+        if self._confirm(f"Удалить записей: {len(ids)}?"):
+            for result_id in ids:
+                self.db.delete_result(result_id)
             self.refresh_results()
             self.results_preview.clear()
+
+    def clear_logs(self) -> None:
+        if self._confirm("Очистить журнал запросов?"):
+            self.db.clear_logs()
+            self.refresh_logs()
 
     def save_settings(self) -> None:
         timeout = self.timeout_edit.text().strip()
@@ -847,6 +1094,11 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
+    palette = app.palette()
+    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#5b4a1e"))
+    palette.setColor(QPalette.ColorRole.Text, QColor("#111827"))
+    palette.setColor(QPalette.ColorRole.Base, QColor("#fff4d6"))
+    app.setPalette(palette)
     app.setStyleSheet(STYLE)
     window = MainWindow()
     window.show()

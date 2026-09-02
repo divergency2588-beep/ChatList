@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 
 def app_root() -> Path:
@@ -15,6 +18,12 @@ def app_root() -> Path:
 
 
 DB_PATH = app_root() / "chatlist.db"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+
+def load_app_env() -> None:
+    load_dotenv(app_root() / ".env")
+    load_dotenv(app_root() / ".env.local", override=True)
 
 
 def _now() -> str:
@@ -23,6 +32,7 @@ def _now() -> str:
 
 class Database:
     def __init__(self, path: Path | str = DB_PATH) -> None:
+        load_app_env()
         self.path = Path(path)
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
@@ -75,6 +85,20 @@ class Database:
         self.conn.commit()
         self._seed_defaults()
 
+    def _ensure_model(self, name: str, api_url: str, api_id: str, is_active: bool) -> None:
+        row = self.conn.execute(
+            "SELECT id FROM models WHERE name = ? AND api_url = ?",
+            (name, api_url),
+        ).fetchone()
+        if row is None:
+            self.conn.execute(
+                """
+                INSERT INTO models (name, api_url, api_id, is_active)
+                VALUES (?, ?, ?, ?)
+                """,
+                (name, api_url, api_id, int(is_active)),
+            )
+
     def _seed_defaults(self) -> None:
         if self.conn.execute("SELECT COUNT(*) FROM models").fetchone()[0] == 0:
             self.conn.executemany(
@@ -103,6 +127,17 @@ class Database:
                     ),
                 ],
             )
+
+        openrouter_models = [
+            "openrouter/free",
+            "openai/gpt-4o-mini",
+            "deepseek/deepseek-chat",
+        ]
+        custom = os.getenv("OPENROUTER_MODEL", "").strip()
+        if custom and custom not in openrouter_models:
+            openrouter_models.insert(0, custom)
+        for name in openrouter_models:
+            self._ensure_model(name, OPENROUTER_URL, "OPENROUTER_API_KEY", True)
 
         defaults = {
             "request_timeout": "60",
@@ -263,3 +298,7 @@ class Database:
             "SELECT * FROM logs ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
+
+    def clear_logs(self) -> None:
+        self.conn.execute("DELETE FROM logs")
+        self.conn.commit()

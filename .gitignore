@@ -149,6 +149,7 @@ activemq-data/
 
 # App data
 chatlist.db
+.env.local
 
 # Environments
 .env

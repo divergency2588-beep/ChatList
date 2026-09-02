@@ -44,13 +44,21 @@ logs              (журнал запросов, опционально)
 
 Активные модели выбираются так: `WHERE is_active = 1`.
 
-Стартовые записи (создаются только если таблица пустая, по умолчанию выключены):
+Стартовые записи прямых API (если таблица пустая, по умолчанию выключены):
 
 | name | api_url | api_id |
 |---|---|---|
 | `gpt-4o-mini` | `https://api.openai.com/v1/chat/completions` | `OPENAI_API_KEY` |
 | `deepseek-chat` | `https://api.deepseek.com/v1/chat/completions` | `DEEPSEEK_API_KEY` |
 | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1/chat/completions` | `GROQ_API_KEY` |
+
+Модели OpenRouter добавляются всегда, если их ещё нет (активны). Ключ — `OPENROUTER_API_KEY` в `.env` или `.env.local`. При наличии `OPENROUTER_MODEL` эта модель тоже попадает в справочник.
+
+| name | api_url | api_id |
+|---|---|---|
+| `openrouter/free` | `https://openrouter.ai/api/v1/chat/completions` | `OPENROUTER_API_KEY` |
+| `openai/gpt-4o-mini` | `https://openrouter.ai/api/v1/chat/completions` | `OPENROUTER_API_KEY` |
+| `deepseek/deepseek-chat` | `https://openrouter.ai/api/v1/chat/completions` | `OPENROUTER_API_KEY` |
 
 ## Таблица `results`
 
